@@ -150,6 +150,10 @@ export function useCodex() {
     async (sessionId?: string) => {
       const id = sessionId ?? snap.current.activeId;
       if (!id) return;
+      // If the user switched sessions while this turn was finishing, the live
+      // threadsRef now belongs to a different session — skip, so a late finalizer
+      // can't clobber the loaded session with the wrong content.
+      if (sessionId && snap.current.activeId !== sessionId) return;
       const threads = threadsRef.current; // current, never a stale snapshot
       const all = Object.values(threads).flat();
       const firstUser = all.find((m) => m.role === "user");

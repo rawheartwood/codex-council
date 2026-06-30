@@ -113,17 +113,20 @@ function blocked(ctx: CodexCouncilContext, req: IncomingMessage, res: ServerResp
 }
 
 async function readBody(req: IncomingMessage, maxBytes = 512 * 1024): Promise<string> {
+  // Decode incrementally so a multi-byte UTF-8 sequence split across chunk
+  // boundaries isn't corrupted; cap on raw byte length.
+  const dec = new StringDecoder("utf8");
   let body = "";
   let size = 0;
-  for await (const chunk of req as AsyncIterable<unknown>) {
-    const s = String(chunk);
-    size += Buffer.byteLength(s);
+  for await (const chunk of req as AsyncIterable<Buffer>) {
+    size += chunk.length;
     if (size > maxBytes) {
       (req as unknown as { destroy?: () => void }).destroy?.();
       throw new Error("request body too large");
     }
-    body += s;
+    body += dec.write(chunk);
   }
+  body += dec.end();
   return body;
 }
 
@@ -922,24 +925,30 @@ async function handleSettings(
 
 // ── registration ──────────────────────────────────────────────────────────────
 export function registerCodexCouncil(server: DevServer, ctx: CodexCouncilContext): void {
-  // A rejected handler must never leave the request hanging: answer 500 if
-  // nothing was sent yet, else just end the (possibly streaming) response.
-  const safe = (res: ServerResponse, ret: unknown): void => {
-    if (ret instanceof Promise)
-      ret.catch(() => {
-        try {
-          if (!res.headersSent) sendJson(res, 500, { error: "internal error" });
-          else res.end();
-        } catch {
-          /* socket gone */
-        }
-      });
+  // A handler must never leave the request hanging: answer 500 if nothing was
+  // sent yet, else just end the (possibly streaming) response. Catches both a
+  // synchronous throw and a rejected promise.
+  const safe = (res: ServerResponse, run: () => unknown): void => {
+    const fail = (): void => {
+      try {
+        if (!res.headersSent) sendJson(res, 500, { error: "internal error" });
+        else res.end();
+      } catch {
+        /* socket gone */
+      }
+    };
+    try {
+      const ret = run();
+      if (ret instanceof Promise) ret.catch(fail);
+    } catch {
+      fail();
+    }
   };
   const post =
     (fn: (c: CodexCouncilContext, req: IncomingMessage, res: ServerResponse) => unknown): Handler =>
     (req, res, next) => {
       if (req.method !== "POST") return next();
-      safe(res, fn(ctx, req, res));
+      safe(res, () => fn(ctx, req, res));
     };
 
   server.middlewares.use(CODEX_ENDPOINTS.chat, post(handleChat));
@@ -947,19 +956,19 @@ export function registerCodexCouncil(server: DevServer, ctx: CodexCouncilContext
   server.middlewares.use(CODEX_ENDPOINTS.apply, post(handleApply));
   server.middlewares.use(CODEX_ENDPOINTS.status, (req, res, next) => {
     if (req.method !== "GET") return next();
-    safe(res, handleStatus(ctx, req, res));
+    safe(res, () => handleStatus(ctx, req, res));
   });
   server.middlewares.use(CODEX_ENDPOINTS.usage, (req, res, next) => {
     if (req.method !== "GET") return next();
-    safe(res, handleUsage(ctx, req, res));
+    safe(res, () => handleUsage(ctx, req, res));
   });
   server.middlewares.use(CODEX_ENDPOINTS.sessions, (req, res, next) => {
     if (req.method !== "GET" && req.method !== "POST") return next();
-    safe(res, handleSessions(ctx, req, res));
+    safe(res, () => handleSessions(ctx, req, res));
   });
   server.middlewares.use(CODEX_ENDPOINTS.settings, (req, res, next) => {
     if (req.method !== "GET" && req.method !== "POST") return next();
-    safe(res, handleSettings(ctx, req, res));
+    safe(res, () => handleSettings(ctx, req, res));
   });
 }
 
