@@ -533,6 +533,39 @@
 .cx-md a {
   color: var(--cx-cyan);
 }
+/* GFM tables/blockquotes/hr — common in "compare these approaches" output, which
+ * is the signature use case. Themed so they don't render as default white boxes. */
+.cx-md table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 8px 0;
+  font-size: 12px;
+  display: block;
+  overflow-x: auto;
+}
+.cx-md th,
+.cx-md td {
+  border: 1px solid var(--cx-line);
+  padding: 5px 9px;
+  text-align: left;
+  vertical-align: top;
+}
+.cx-md th {
+  background: rgba(120, 247, 255, 0.08);
+  color: var(--cx-bone);
+  font-weight: 600;
+}
+.cx-md blockquote {
+  margin: 8px 0;
+  padding: 2px 0 2px 12px;
+  border-left: 2px solid var(--cx-line);
+  color: var(--cx-ash);
+}
+.cx-md hr {
+  border: 0;
+  border-top: 1px solid var(--cx-line);
+  margin: 12px 0;
+}
 .cx-md code:not(.hljs) {
   background: rgba(120, 247, 255, 0.1);
   border-radius: 5px;
@@ -1145,9 +1178,26 @@
 .codex-tab.cx-rail-collapsed .cx-nav-item { justify-content: center; padding: 0; gap: 0; }
 .codex-tab.cx-rail-collapsed .cx-nav-item .cx-dot { margin: 0; }
 
+/* Visible keyboard focus on every interactive control (WCAG 2.4.7). The dark
+ * theme hides the default ring, and selects/textarea set outline:none. */
+.codex-tab :is(button, select, textarea, [role="tab"], a[href]):focus-visible {
+  outline: 2px solid var(--cx-cyan);
+  outline-offset: 2px;
+  border-radius: 8px;
+}
+
 @media (max-width: 1080px) {
   .cx-workspace { grid-template-columns: minmax(0, 1fr); }
   .cx-prompt-grid { grid-template-columns: 1fr; }
+  /* Stack the two council lanes so side-by-side is usable on a phone. */
+  .cx-grid-2 { grid-template-columns: minmax(0, 1fr); }
+  /* Stack the first-run hero so it can't overflow sideways. */
+  .cx-empty { grid-template-columns: minmax(0, 1fr); }
+  /* Let topbar + status controls wrap instead of clipping out of reach. */
+  .cx-topbar { flex-wrap: wrap; height: auto; overflow: visible; }
+  .cx-actions,
+  .cx-status,
+  .cx-status-right { flex-wrap: wrap; }
 }
 @media (prefers-reduced-motion: reduce) {
   .codex-tab *,
