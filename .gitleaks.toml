@@ -1,0 +1,21 @@
+# gitleaks config for codex-council.
+# Extends the default ruleset. The only allowlisted source file is the redaction
+# test, which deliberately contains FAKE, key-shaped fixtures (e.g. "sk-ant-…",
+# "xi-api-key: …") so it can verify redact() masks them. These are not real
+# secrets. Dependency/build dirs are excluded too.
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Fake secret fixtures used to test the redaction patterns (not real secrets)"
+paths = [
+  '''src/lib/business-ops-env\.test\.ts''',
+]
+
+[[allowlists]]
+description = "Dependencies and build output"
+paths = [
+  '''node_modules/''',
+  '''dist/''',
+  '''\.output/''',
+]
