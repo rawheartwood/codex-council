@@ -65,6 +65,8 @@ const codexHost = {
 };
 
 export default defineConfig({
-  server: { host: "127.0.0.1" },
+  // Pinned so the URL in the README + the per-origin token handshake stay valid;
+  // strictPort fails loudly on a collision instead of silently moving to 5174.
+  server: { host: "127.0.0.1", port: 5173, strictPort: true },
   plugins: [codexHost, tsConfigPaths(), tanstackStart(), viteReact()],
 });

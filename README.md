@@ -83,7 +83,7 @@ The council spawns real CLIs with real subscription access, so the dev server is
 - **Output redaction.** Known secret shapes (Anthropic/OpenAI/GitHub/AWS keys, JWTs, …) are masked from any model output before it's written to disk or returned to the browser.
 - **Confined writes.** `workspace-write` applies are realpath-confined under `$HOME` and require the apply gate; a symlink that escapes `$HOME` is rejected.
 
-Console preferences and session history persist locally at `~/.codex-council/` (mode `0700`), never in the repo.
+Console preferences and session history persist locally at `~/.claude-os/codex-council/` (mode `0700`), never in the repo.
 
 ## Stack
 
