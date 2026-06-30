@@ -1,6 +1,6 @@
 // Settings — persisted, cross-device console preferences. Presentational: owns a
 // local draft and commits via onSave (which persists to the server settings store).
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   ENGINE_MODELS,
   CODEX_THEMES,
@@ -19,8 +19,17 @@ export function SettingsView({
 }) {
   const [draft, setDraft] = useState<Settings>(settings);
   const [saved, setSaved] = useState(false);
+  const edited = useRef(false);
+
+  // Re-sync when the server settings arrive, unless the user has started editing.
+  // Without this, opening Settings before the async load resolves freezes the
+  // draft on defaults and Save writes those defaults over the real settings.
+  useEffect(() => {
+    if (!edited.current) setDraft(settings);
+  }, [settings]);
 
   const patch = (p: Partial<CouncilSettings>): void => {
+    edited.current = true;
     setDraft((d) => ({ ...d, ...p }));
     setSaved(false);
   };
@@ -31,6 +40,7 @@ export function SettingsView({
   // server ignores unknown fields), so no strip needed.
   const save = async (): Promise<void> => {
     await onSave(draft);
+    edited.current = false;
     setSaved(true);
   };
 

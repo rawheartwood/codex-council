@@ -86,15 +86,6 @@ export function CodexCouncil() {
         <nav className="cx-nav" aria-label="Codex console">
           <button
             type="button"
-            className="cx-nav-item"
-            title="Overview — dashboard summary (coming soon)"
-            disabled
-          >
-            <span className="cx-dot" />
-            <span className="cx-lbl">Overview</span>
-          </button>
-          <button
-            type="button"
             className={`cx-nav-item${activeView === "council" ? " active" : ""}`}
             title="Codex Council"
             onClick={() => setActiveView("council")}
@@ -112,15 +103,6 @@ export function CodexCouncil() {
           >
             <span className="cx-dot" />
             <span className="cx-lbl">Sessions</span>
-          </button>
-          <button
-            type="button"
-            className="cx-nav-item"
-            title="Artifacts — files & diffs the council produced (coming soon)"
-            disabled
-          >
-            <span className="cx-dot" />
-            <span className="cx-lbl">Artifacts</span>
           </button>
           <button
             type="button"

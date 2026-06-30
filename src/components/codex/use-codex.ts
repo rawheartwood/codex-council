@@ -90,6 +90,13 @@ export function useCodex() {
   useEffect(() => {
     settingsRef.current = settings;
   }, [settings]);
+  // Auto-expire the transient status note so a stale error/warning doesn't
+  // permanently replace the live status strip.
+  useEffect(() => {
+    if (!note) return;
+    const t = setTimeout(() => setNote(""), 6000);
+    return () => clearTimeout(t);
+  }, [note]);
 
   const refreshSessions = useCallback(() => {
     void listSessions().then(setSessions);
@@ -400,6 +407,17 @@ export function useCodex() {
   const loadSession = useCallback(async (id: string) => {
     const rec = await getSession(id);
     if (!rec) return;
+    // Tear down any in-flight streams before swapping content, so an old turn
+    // can't write into the newly loaded session or leave a lane stuck streaming.
+    Object.values(aborts.current).forEach((a) => a.abort());
+    aborts.current = {};
+    synthAbort.current?.abort();
+    synthAbort.current = null;
+    setStreamingLanes({});
+    setSynthStreaming(false);
+    setDrafts({});
+    setDraft("");
+    setNote("");
     createdAt.current[id] = rec.createdAt;
     nativeIds.current = { ...rec.nativeSessionIds };
     lastPrompt.current = {};
