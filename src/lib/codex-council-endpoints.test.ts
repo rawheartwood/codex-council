@@ -1,7 +1,8 @@
 import { describe, it, expect } from "vitest";
 import os from "node:os";
 import { join } from "node:path";
-import { mkdtempSync, symlinkSync, rmSync } from "node:fs";
+import { mkdtempSync, symlinkSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { __test } from "./codex-council-endpoints";
 
 const HOME = os.homedir();
@@ -117,6 +118,21 @@ describe("safeCwd", () => {
       symlinkSync("/etc", link);
       expect(__test.safeCwd(link)).toBeNull();
     } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("resolveBinary — PATH lookup", () => {
+  it("finds the binary via $PATH, not only the hardcoded locations", () => {
+    const dir = mkdtempSync(join(tmpdir(), "codex-bin-"));
+    const prevPath = process.env.PATH;
+    try {
+      writeFileSync(join(dir, "codex"), "#!/bin/sh\n", { mode: 0o755 });
+      process.env.PATH = `${dir}:${prevPath ?? ""}`;
+      expect(__test.resolveBinary("codex")).toBe(join(dir, "codex"));
+    } finally {
+      process.env.PATH = prevPath;
       rmSync(dir, { recursive: true, force: true });
     }
   });

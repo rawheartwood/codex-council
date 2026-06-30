@@ -24,12 +24,15 @@ import {
   mkdirSync,
   readFileSync,
   writeFileSync,
+  renameSync,
+  copyFileSync,
   statSync,
   rmSync,
   realpathSync,
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join, resolve, sep } from "node:path";
+import { join, resolve, sep, delimiter } from "node:path";
+import { StringDecoder } from "node:string_decoder";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { safeChildEnv, redact, tokenMatches, originAllowed } from "./business-ops-env";
 import {
@@ -75,6 +78,15 @@ export interface CodexCouncilContext {
 }
 
 function resolveBinary(name: CouncilEngine): string | null {
+  const exe = name === "claude" ? "claude" : "codex";
+  // Primary: search $PATH, so installs via nvm/asdf/volta, an npm global prefix,
+  // ~/bin, /usr/bin, or any Homebrew prefix are found — not just fixed locations.
+  for (const dir of (process.env.PATH ?? "").split(delimiter)) {
+    if (!dir) continue;
+    const p = join(dir, exe);
+    if (existsSync(p)) return p;
+  }
+  // Fallback: well-known absolute paths (covers a thin PATH).
   const candidates =
     name === "claude"
       ? [join(HOME, ".local", "bin", "claude"), "/opt/homebrew/bin/claude", "/usr/local/bin/claude"]
@@ -137,7 +149,12 @@ function openSse(res: ServerResponse): { emit: (ev: CodexStreamEvent) => void; c
   }, 15_000);
   return {
     emit(ev) {
-      const safe = ev.type === "token" ? { ...ev, text: redact(ev.text) } : ev;
+      const safe =
+        ev.type === "token"
+          ? { ...ev, text: redact(ev.text) }
+          : ev.type === "error"
+            ? { ...ev, message: redact(ev.message) }
+            : ev;
       try {
         res.write(`data: ${JSON.stringify(safe)}\n\n`);
       } catch {
@@ -199,16 +216,20 @@ function runEngine(
   let errTail = "";
   let claudeUsage = 0;
   let textEmitted = false; // claude: did any content_block_delta stream?
+  // Declared before finish() so the synchronous-spawn-failure path (which calls
+  // finish() before the setTimeout below runs) can't hit a temporal-dead-zone
+  // ReferenceError on clearTimeout.
+  let timer: ReturnType<typeof setTimeout> | undefined = undefined;
 
   const finish = (): void => {
     if (settled) return;
     settled = true;
-    clearTimeout(timer);
+    if (timer) clearTimeout(timer);
     // Codex prints "session id:" and "tokens used\nN" to stderr.
     if (engine === "codex") {
       if (!sessionEmitted) {
         const m = /session id:\s*([0-9a-fA-F-]{8,128})/.exec(errTail);
-        if (m) emit({ type: "session", sessionId: m[1] });
+        if (m && LIMITS.sessionIdRe.test(m[1])) emit({ type: "session", sessionId: m[1] });
       }
       const t = /tokens used[\s:]*([\d,]+)/i.exec(errTail);
       if (t) {
@@ -237,7 +258,7 @@ function runEngine(
     return { bind: () => {} };
   }
 
-  const timer = setTimeout(() => {
+  timer = setTimeout(() => {
     emit({ type: "error", message: "Request timed out." });
     try {
       child.kill("SIGTERM");
@@ -265,13 +286,17 @@ function runEngine(
   }
 
   if (engine === "codex") {
+    // Per-stream UTF-8 decoders so a multi-byte char (em-dash, curly quote, CJK,
+    // emoji) split across a chunk boundary isn't corrupted into U+FFFD.
+    const outDec = new StringDecoder("utf8");
+    const errDec = new StringDecoder("utf8");
     // stdout = the clean answer; stream it verbatim.
-    child.stdout?.on("data", (b) => emit({ type: "token", text: String(b) }));
+    child.stdout?.on("data", (b) => emit({ type: "token", text: outDec.write(b) }));
     child.stderr?.on("data", (b) => {
-      errTail = (errTail + String(b)).slice(-ERR_TAIL_CAP);
+      errTail = (errTail + errDec.write(b)).slice(-ERR_TAIL_CAP);
       if (!sessionEmitted) {
         const m = /session id:\s*([0-9a-fA-F-]{8,128})/.exec(errTail);
-        if (m) {
+        if (m && LIMITS.sessionIdRe.test(m[1])) {
           sessionEmitted = true;
           emit({ type: "session", sessionId: m[1] });
         }
@@ -279,6 +304,8 @@ function runEngine(
     });
   } else {
     // Claude: stream-json (JSONL). Parse text deltas + session id + usage.
+    const outDec = new StringDecoder("utf8");
+    const errDec = new StringDecoder("utf8");
     let buf = "";
     const handleLine = (line: string): void => {
       const trimmed = line.trim();
@@ -329,7 +356,7 @@ function runEngine(
       }
     };
     child.stdout?.on("data", (b) => {
-      buf += String(b);
+      buf += outDec.write(b);
       let nl: number;
       while ((nl = buf.indexOf("\n")) !== -1) {
         handleLine(buf.slice(0, nl));
@@ -337,7 +364,7 @@ function runEngine(
       }
     });
     child.stderr?.on("data", (b) => {
-      errTail = (errTail + String(b)).slice(-ERR_TAIL_CAP);
+      errTail = (errTail + errDec.write(b)).slice(-ERR_TAIL_CAP);
     });
   }
 
@@ -362,6 +389,15 @@ function runEngine(
           } catch {
             /* gone */
           }
+          // Escalate to SIGKILL if the child ignores SIGTERM (mirrors the timeout
+          // path) so a stuck CLI can't outlive the request as an orphan process.
+          setTimeout(() => {
+            try {
+              child.kill("SIGKILL");
+            } catch {
+              /* gone */
+            }
+          }, 2_000);
           // Stop the heartbeat + end the stream promptly (writes to the closed
           // socket are caught).
           finish();
@@ -474,16 +510,31 @@ function buildClaudeArgs(opts: { model: string; sessionId?: string }): string[] 
 }
 
 // ── session store ─────────────────────────────────────────────────────────────
+const SESSIONS_TMP = SESSIONS_FILE + ".tmp";
+const SESSIONS_BAK = SESSIONS_FILE + ".bak";
 function readStore(): Record<string, SessionRecord> {
-  try {
-    return JSON.parse(readFileSync(SESSIONS_FILE, "utf8")) as Record<string, SessionRecord>;
-  } catch {
-    return {};
+  // Try the live file, then the last-good backup, before giving up to empty —
+  // so a corrupt primary doesn't immediately erase history.
+  for (const file of [SESSIONS_FILE, SESSIONS_BAK]) {
+    try {
+      return JSON.parse(readFileSync(file, "utf8")) as Record<string, SessionRecord>;
+    } catch {
+      /* try the next source */
+    }
   }
+  return {};
 }
 function writeStore(store: Record<string, SessionRecord>): void {
   mkdirSync(STORE_DIR, { recursive: true, mode: 0o700 });
-  writeFileSync(SESSIONS_FILE, JSON.stringify(store, null, 2), { mode: 0o600 });
+  // Back up the last good file, then write atomically (tmp + rename) so a crash
+  // mid-write leaves the live file intact rather than truncated/corrupt.
+  try {
+    if (existsSync(SESSIONS_FILE)) copyFileSync(SESSIONS_FILE, SESSIONS_BAK);
+  } catch {
+    /* best-effort backup */
+  }
+  writeFileSync(SESSIONS_TMP, JSON.stringify(store, null, 2), { mode: 0o600 });
+  renameSync(SESSIONS_TMP, SESSIONS_FILE);
 }
 // Serialize read-modify-write of the session store so two near-simultaneous
 // saves (e.g. both council lanes finishing at once) can't clobber each other.
@@ -521,6 +572,12 @@ async function handleChat(
   const sandbox: CodexSandbox = p.sandbox === "workspace-write" ? "workspace-write" : "read-only";
   const cwd = safeCwd(p.cwd);
   if (cwd === null) return sendJson(res, 400, { error: "cwd must be a directory under $HOME" });
+  // workspace-write can mutate files, so it must target an explicit project
+  // folder — never silently default to the whole home directory.
+  if (sandbox === "workspace-write" && (!p.cwd || cwd === HOME))
+    return sendJson(res, 400, {
+      error: "workspace-write requires an explicit project folder (cwd) under $HOME",
+    });
 
   const bin = resolveBinary(p.engine);
   if (!bin) return sendJson(res, 503, { error: `${p.engine} binary not found` });
@@ -648,7 +705,9 @@ function handleUsage(ctx: CodexCouncilContext, req: IncomingMessage, res: Server
     let sessionTokens = 0;
     let sessionTurns = 0;
     for (const messages of Object.values(rec.threads ?? {})) {
+      if (!Array.isArray(messages)) continue;
       for (const msg of messages) {
+        if (!msg || typeof msg !== "object") continue;
         if (msg.role !== "assistant" || typeof msg.tokens !== "number") continue;
         const eng: CouncilEngine = msg.engine === "claude" ? "claude" : "codex";
         usage.totalTokens += msg.tokens;
@@ -724,7 +783,9 @@ async function handleSessions(
     // Bound disk: cap per-message text.
     const threads = s.threads ?? {};
     for (const messages of Object.values(threads)) {
+      if (!Array.isArray(messages)) continue;
       for (const msg of messages) {
+        if (!msg || typeof msg !== "object") continue;
         if (typeof msg.text === "string" && msg.text.length > MAX_MSG_CHARS)
           msg.text = msg.text.slice(0, MAX_MSG_CHARS);
       }
@@ -861,11 +922,24 @@ async function handleSettings(
 
 // ── registration ──────────────────────────────────────────────────────────────
 export function registerCodexCouncil(server: DevServer, ctx: CodexCouncilContext): void {
+  // A rejected handler must never leave the request hanging: answer 500 if
+  // nothing was sent yet, else just end the (possibly streaming) response.
+  const safe = (res: ServerResponse, ret: unknown): void => {
+    if (ret instanceof Promise)
+      ret.catch(() => {
+        try {
+          if (!res.headersSent) sendJson(res, 500, { error: "internal error" });
+          else res.end();
+        } catch {
+          /* socket gone */
+        }
+      });
+  };
   const post =
     (fn: (c: CodexCouncilContext, req: IncomingMessage, res: ServerResponse) => unknown): Handler =>
     (req, res, next) => {
       if (req.method !== "POST") return next();
-      void fn(ctx, req, res);
+      safe(res, fn(ctx, req, res));
     };
 
   server.middlewares.use(CODEX_ENDPOINTS.chat, post(handleChat));
@@ -873,19 +947,19 @@ export function registerCodexCouncil(server: DevServer, ctx: CodexCouncilContext
   server.middlewares.use(CODEX_ENDPOINTS.apply, post(handleApply));
   server.middlewares.use(CODEX_ENDPOINTS.status, (req, res, next) => {
     if (req.method !== "GET") return next();
-    handleStatus(ctx, req, res);
+    safe(res, handleStatus(ctx, req, res));
   });
   server.middlewares.use(CODEX_ENDPOINTS.usage, (req, res, next) => {
     if (req.method !== "GET") return next();
-    handleUsage(ctx, req, res);
+    safe(res, handleUsage(ctx, req, res));
   });
   server.middlewares.use(CODEX_ENDPOINTS.sessions, (req, res, next) => {
     if (req.method !== "GET" && req.method !== "POST") return next();
-    void handleSessions(ctx, req, res);
+    safe(res, handleSessions(ctx, req, res));
   });
   server.middlewares.use(CODEX_ENDPOINTS.settings, (req, res, next) => {
     if (req.method !== "GET" && req.method !== "POST") return next();
-    void handleSettings(ctx, req, res);
+    safe(res, handleSettings(ctx, req, res));
   });
 }
 
