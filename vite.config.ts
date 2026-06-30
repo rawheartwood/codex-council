@@ -35,9 +35,20 @@ const codexHost = {
         res.end(JSON.stringify({ error: "loopback only" }));
         return;
       }
-      if (!originAllowed(req.headers["origin"])) {
+      if (!originAllowed(req.headers["origin"], req.headers["sec-fetch-site"])) {
         res.statusCode = 403;
         res.end(JSON.stringify({ error: "bad origin" }));
+        return;
+      }
+      // This endpoint vends the secret, so demand affirmative browser proof: a
+      // real same-origin fetch sends Sec-Fetch-Site: same-origin; a top-level
+      // navigation sends "none". A header-less caller (curl/script that didn't set
+      // it) is refused — it can't prove it's the same-origin app.
+      const sfs = req.headers["sec-fetch-site"];
+      const origin = req.headers["origin"];
+      if (origin === undefined && sfs !== "same-origin" && sfs !== "none") {
+        res.statusCode = 403;
+        res.end(JSON.stringify({ error: "forbidden" }));
         return;
       }
       res.setHeader("Content-Type", "application/json");

@@ -100,7 +100,7 @@ function blocked(ctx: CodexCouncilContext, req: IncomingMessage, res: ServerResp
     sendJson(res, 403, { error: "loopback only" });
     return true;
   }
-  if (!originAllowed(req.headers.origin)) {
+  if (!originAllowed(req.headers.origin, req.headers["sec-fetch-site"])) {
     sendJson(res, 403, { error: "bad origin" });
     return true;
   }

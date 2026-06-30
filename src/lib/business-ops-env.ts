@@ -35,12 +35,9 @@ const ENV_ALLOWLIST: readonly string[] = [
   "LC_ALL",
   "LC_CTYPE",
   "LANGUAGE",
-  "HTTP_PROXY",
-  "HTTPS_PROXY",
-  "NO_PROXY",
-  "http_proxy",
-  "https_proxy",
-  "no_proxy",
+  // NOTE: proxy vars (HTTP_PROXY/HTTPS_PROXY/...) are deliberately NOT forwarded —
+  // they frequently embed credentials (http://user:pass@host) and can redirect the
+  // child's auth traffic, which would violate the no-inherited-secrets guarantee.
 ];
 
 /** Build a child-process env from the allowlist only — no inherited secrets. */
@@ -118,14 +115,17 @@ export function tokenMatches(provided: unknown, expected: string): boolean {
 }
 
 /**
- * Reject cross-site Origins. Same-origin browser requests (localhost/127.0.0.1,
- * any port) and non-browser callers (no Origin header, e.g. curl) are allowed; an
- * external site's drive-by POST is rejected. When remote access is configured
+ * Reject cross-site requests. A real cross-site browser request always carries
+ * Sec-Fetch-Site: cross-site/same-site (a header pages cannot forge), so those are
+ * rejected up front. Same-origin browser requests (localhost/127.0.0.1, any port)
+ * and non-browser callers (no Origin header, e.g. curl) are allowed; an external
+ * site's drive-by POST is rejected. When remote access is configured
  * (~/.claude-os/remote-access.json), the single pinned tailnet origin is also
  * accepted — the identity gate in remote-access.ts has already vouched for the
  * request by the time any guard runs.
  */
-export function originAllowed(origin: unknown): boolean {
+export function originAllowed(origin: unknown, secFetchSite?: unknown): boolean {
+  if (secFetchSite === "cross-site" || secFetchSite === "same-site") return false;
   if (origin === undefined || origin === null || origin === "") return true;
   if (typeof origin !== "string") return false;
   if (/^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i.test(origin)) return true;
